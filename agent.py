@@ -44,6 +44,21 @@ def signal_handler(sig, frame):
     send_status("offline")
     sys.exit(0)
 
+
+def send_metric(server_url: str, pluginid, metrics) -> requests.Response:
+    """
+    Sendet die von get_metrics zurÃ¼ckgegebene Metrik als JSON an den /metric Endpoint.
+    Der Ã¼bergebene agentid-Wert wird im HTTP-Header gesendet.
+    """
+    headers = {"agentid": args.agentid}
+    payload = {"pluginid": pluginid, "agentid": args.agentid, "metrics": metrics}
+    try:
+        response = requests.post(f"{server_url}/metric", json=payload, headers=headers)
+        return response
+    except Exception as e:
+        raise RuntimeError(f"Fehler beim Senden der Metriken: {e}")
+
+
 def run_plugin_instance(plugin, plugin_file_path):
     try:
         spec = importlib.util.spec_from_file_location(plugin, plugin_file_path)
@@ -68,8 +83,13 @@ def run_plugin_instance(plugin, plugin_file_path):
 
     while True:
         try:
-            metric = plugin_instance.get_metric()
+            metric = plugin_instance.get_metrics()
             print(f"Metric von Plugin '{plugin}': {metric}")
+            send_metric(
+                server_url=args.server,
+                pluginid=plugin_instance.get_plugin_id(),
+                metrics=metric,
+            )
         except Exception as e:
             print(f"Fehler bei get_metric von Plugin '{plugin}': {e}")
         try:
@@ -80,52 +100,53 @@ def run_plugin_instance(plugin, plugin_file_path):
         time.sleep(sleep_time)
 
 
+def download_plugins(plugins: list):
+    for plugin in plugins:
+        plugin_url = f"{args.server}/plugin/{plugin}"
+        headers = {"agentid": args.agentid}
+        try:
+            response = requests.get(plugin_url, headers=headers)
+            response.raise_for_status()
+            plugin_code = response.text
+            # Speichere den Plugin-Code in der Datei plugins/{plugin}.py
+            plugin_file_path = os.path.join(plugins_dir, f"{plugin}.py")
+            with open(plugin_file_path, "w", encoding="utf-8") as f:
+                f.write(plugin_code)
+            print(f"plugin '{plugin}' successfully downloaded and stored.")
+        except Exception as e:
+            print(f"error while loading plugin '{plugin}': {e}")
+
+
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-if __name__ == "__main__":
-    send_status("online")
-    print("Agent online. Drücke Strg+C zum Beenden.")
 
+if __name__ == "__main__":
     plugins_dir = "plugins"
     if not os.path.exists(plugins_dir):
         os.makedirs(plugins_dir)
 
-    previous_plugins = []
-    current_plugins = []
-    last_plugins_update = 0
     plugin_threads = {}
 
-    while True:
-        current_time = time.time()
-        # Aktualisiere die Plugin-Liste nur, wenn 60 Sekunden seit dem letzten Update vergangen sind
-        if current_time - last_plugins_update >= 60:
-            new_plugins = fetch_plugins()
-            if new_plugins != previous_plugins:
-                print("Plugins aktualisiert:", new_plugins)
-                # Für jedes Plugin in der neuen Liste den Python-Code abrufen
-                for plugin in new_plugins:
-                    plugin_url = f"{args.server}/plugin/{plugin}"
-                    headers = {"agentid": args.agentid}
-                    try:
-                        response = requests.get(plugin_url, headers=headers)
-                        response.raise_for_status()
-                        plugin_code = response.text
-                        # Speichere den Plugin-Code in der Datei plugins/{plugin}.py
-                        plugin_file_path = os.path.join(plugins_dir, f"{plugin}.py")
-                        with open(plugin_file_path, "w", encoding="utf-8") as f:
-                            f.write(plugin_code)
-                        print(f"Plugin '{plugin}' heruntergeladen und gespeichert.")
-                        if plugin != "plugin_base" and plugin not in plugin_threads:
-                            t = threading.Thread(target=run_plugin_instance, args=(plugin, plugin_file_path))
-                            t.daemon = True
-                            t.start()
-                            plugin_threads[plugin] = t
-                    except Exception as e:
-                        print(f"Fehler beim Abrufen von Plugin '{plugin}': {e}")
-                previous_plugins = new_plugins
-                current_plugins = new_plugins  # Update der global verwendeten Liste
-            last_plugins_update = current_time
+    plugins = fetch_plugins()
+    if len(plugins) == 0:
+        print("no plugins found. exit.")
+        sys.exit(0)
 
-        # Die Metrik-Erfassung erfolgt jetzt in eigenen Threads pro Plugin.
+    print("plugins assigned:", plugins)
+    download_plugins(plugins)
+
+    send_status("online")
+    print("agent online. Press Ctrl+C to quit.")
+    while True:
+        for plugin in plugins:
+            if plugin != "plugin_base" and plugin not in plugin_threads:
+                plugin_file_path = os.path.join(plugins_dir, f"{plugin}.py")
+                t = threading.Thread(
+                    target=run_plugin_instance, args=(plugin, plugin_file_path)
+                )
+                t.daemon = True
+                t.start()
+                plugin_threads[plugin] = t
+
         time.sleep(5)
