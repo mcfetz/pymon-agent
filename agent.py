@@ -75,4 +75,27 @@ if __name__ == "__main__":
                 except Exception as e:
                     print(f"Fehler beim Abrufen von Plugin '{plugin}': {e}")
             previous_plugins = current_plugins
+
+        # Metric-Erfassung für alle Plugins (außer "plugin_base")
+        for plugin in current_plugins:
+            if plugin == "plugin_base":
+                continue
+            plugin_file_path = os.path.join(plugins_dir, f"{plugin}.py")
+            try:
+                spec = importlib.util.spec_from_file_location(plugin, plugin_file_path)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                # Suche nach der in diesem Modul definierten Klasse.
+                plugin_classes = [getattr(module, attr) for attr in dir(module)
+                                  if isinstance(getattr(module, attr), type) and not attr.startswith("__")]
+                if plugin_classes:
+                    plugin_class = plugin_classes[0]
+                    plugin_instance = plugin_class()
+                    metric = plugin_instance.get_metric()
+                    print(f"Metric von Plugin '{plugin}': {metric}")
+                else:
+                    print(f"Keine Klasse gefunden in Plugin '{plugin}'.")
+            except Exception as e:
+                print(f"Fehler beim Ausführen von Plugin '{plugin}': {e}")
+
         time.sleep(60)
