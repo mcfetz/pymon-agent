@@ -3,6 +3,7 @@ import requests
 import signal
 import sys
 import time
+import os
 
 parser = argparse.ArgumentParser(description="Monitoring Agent")
 parser.add_argument("--server", required=True, help="Server URL")
@@ -47,10 +48,30 @@ signal.signal(signal.SIGTERM, signal_handler)
 if __name__ == "__main__":
     send_status("online")
     print("Agent online. Drücke Strg+C zum Beenden.")
+
+    plugins_dir = "plugins"
+    if not os.path.exists(plugins_dir):
+        os.makedirs(plugins_dir)
+
     previous_plugins = []
     while True:
         current_plugins = fetch_plugins()
         if current_plugins != previous_plugins:
             print("Plugins aktualisiert:", current_plugins)
+            # Für jedes Plugin in der neuen Liste den Python-Code abrufen
+            for plugin in current_plugins:
+                plugin_url = f"{args.server}/plugin/{plugin}"
+                headers = {"agentid": args.agentid}
+                try:
+                    response = requests.get(plugin_url, headers=headers)
+                    response.raise_for_status()
+                    plugin_code = response.text
+                    # Speichere den Plugin-Code in der Datei plugins/{plugin}.py
+                    plugin_file_path = os.path.join(plugins_dir, f"{plugin}.py")
+                    with open(plugin_file_path, "w", encoding="utf-8") as f:
+                        f.write(plugin_code)
+                    print(f"Plugin '{plugin}' heruntergeladen und gespeichert.")
+                except Exception as e:
+                    print(f"Fehler beim Abrufen von Plugin '{plugin}': {e}")
             previous_plugins = current_plugins
         time.sleep(60)
