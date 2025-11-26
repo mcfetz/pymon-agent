@@ -102,10 +102,12 @@ if __name__ == "__main__":
                     and not attr.startswith("__")
                 ]
                 if plugin_classes:
-                    plugin_class = plugin_classes[0]
-                    plugin_instance = plugin_class()
-                    metric = plugin_instance.get_metric()
-                    print(f"Metric von Plugin '{plugin}': {metric}")
+                    for plugin_class in plugin_classes:
+                        if "PluginBase" in str(plugin_class):
+                            continue
+                        plugin_instance = plugin_class()
+                        metric = plugin_instance.get_metric()
+                        print(f"Metric von Plugin '{plugin}': {metric}")
                 else:
                     print(f"Keine Klasse gefunden in Plugin '{plugin}'.")
             except Exception as e:
