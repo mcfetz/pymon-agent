@@ -45,7 +45,7 @@ if __name__ == "__main__":
     print("Agent online. Drücke Strg+C zum Beenden.")
     previous_plugins = []
     while True:
-        time.sleep(1)
+        time.sleep(60)
         current_plugins = fetch_plugins()
         if current_plugins != previous_plugins:
             print("Plugins aktualisiert:", current_plugins)
