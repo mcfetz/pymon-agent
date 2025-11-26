@@ -4,6 +4,7 @@ import signal
 import sys
 import time
 import os
+import importlib.util
 
 parser = argparse.ArgumentParser(description="Monitoring Agent")
 parser.add_argument("--server", required=True, help="Server URL")
