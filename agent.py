@@ -9,6 +9,7 @@ parser.add_argument("--server", required=True, help="Server URL")
 parser.add_argument("--agentid", required=True, help="Agent ID")
 args = parser.parse_args()
 
+
 def send_status(status):
     url = f"{args.server}/status"
     params = {status: ""}
@@ -18,6 +19,7 @@ def send_status(status):
         response.raise_for_status()
     except Exception as e:
         print(f"Fehler beim Senden des Status '{status}': {e}")
+
 
 def fetch_plugins():
     url = f"{args.server}/plugins"
@@ -32,10 +34,12 @@ def fetch_plugins():
         print(f"Fehler beim Abrufen der Plugins: {e}")
         return []
 
+
 def signal_handler(sig, frame):
     print("Beende Agent... sende offline Status.")
     send_status("offline")
     sys.exit(0)
+
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
@@ -45,8 +49,8 @@ if __name__ == "__main__":
     print("Agent online. Drücke Strg+C zum Beenden.")
     previous_plugins = []
     while True:
-        time.sleep(60)
         current_plugins = fetch_plugins()
         if current_plugins != previous_plugins:
             print("Plugins aktualisiert:", current_plugins)
             previous_plugins = current_plugins
+        time.sleep(60)
