@@ -5,6 +5,7 @@ import sys
 import time
 import os
 import importlib.util
+import threading
 from plugins.plugin_base import PluginBase
 
 parser = argparse.ArgumentParser(description="Monitoring Agent")
@@ -43,6 +44,41 @@ def signal_handler(sig, frame):
     send_status("offline")
     sys.exit(0)
 
+def run_plugin_instance(plugin, plugin_file_path):
+    try:
+        spec = importlib.util.spec_from_file_location(plugin, plugin_file_path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        # Suche nach der in diesem Modul definierten Klasse (ausgenommen PluginBase)
+        plugin_classes = [
+            getattr(module, attr)
+            for attr in dir(module)
+            if isinstance(getattr(module, attr), type)
+            and not attr.startswith("__")
+            and "PluginBase" not in str(getattr(module, attr))
+        ]
+        if not plugin_classes:
+            print(f"Keine geeignete Klasse in Plugin '{plugin}' gefunden.")
+            return
+        plugin_class = plugin_classes[0]
+        plugin_instance = plugin_class()
+    except Exception as e:
+        print(f"Fehler beim Laden des Plugins '{plugin}': {e}")
+        return
+
+    while True:
+        try:
+            metric = plugin_instance.get_metric()
+            print(f"Metric von Plugin '{plugin}': {metric}")
+        except Exception as e:
+            print(f"Fehler bei get_metric von Plugin '{plugin}': {e}")
+        try:
+            sleep_time = plugin_instance.get_default_sleep()
+        except Exception as e:
+            print(f"Fehler bei get_default_sleep von Plugin '{plugin}': {e}")
+            sleep_time = 5  # Fallback-Schlafzeit
+        time.sleep(sleep_time)
+
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
@@ -58,6 +94,7 @@ if __name__ == "__main__":
     previous_plugins = []
     current_plugins = []
     last_plugins_update = 0
+    plugin_threads = {}
 
     while True:
         current_time = time.time()
@@ -79,38 +116,16 @@ if __name__ == "__main__":
                         with open(plugin_file_path, "w", encoding="utf-8") as f:
                             f.write(plugin_code)
                         print(f"Plugin '{plugin}' heruntergeladen und gespeichert.")
+                        if plugin != "plugin_base" and plugin not in plugin_threads:
+                            t = threading.Thread(target=run_plugin_instance, args=(plugin, plugin_file_path))
+                            t.daemon = True
+                            t.start()
+                            plugin_threads[plugin] = t
                     except Exception as e:
                         print(f"Fehler beim Abrufen von Plugin '{plugin}': {e}")
                 previous_plugins = new_plugins
                 current_plugins = new_plugins  # Update der global verwendeten Liste
             last_plugins_update = current_time
 
-        # Metric-Erfassung für alle Plugins (außer "plugin_base")
-        for plugin in current_plugins:
-            if plugin == "plugin_base":
-                continue
-            plugin_file_path = os.path.join(plugins_dir, f"{plugin}.py")
-            try:
-                spec = importlib.util.spec_from_file_location(plugin, plugin_file_path)
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
-                # Suche nach der in diesem Modul definierten Klasse.
-                plugin_classes = [
-                    getattr(module, attr)
-                    for attr in dir(module)
-                    if isinstance(getattr(module, attr), type)
-                    and not attr.startswith("__")
-                ]
-                if plugin_classes:
-                    for plugin_class in plugin_classes:
-                        if "PluginBase" in str(plugin_class):
-                            continue
-                        plugin_instance = plugin_class()
-                        metric = plugin_instance.get_metric()
-                        print(f"Metric von Plugin '{plugin}': {metric}")
-                else:
-                    print(f"Keine Klasse gefunden in Plugin '{plugin}'.")
-            except Exception as e:
-                print(f"Fehler beim Ausführen von Plugin '{plugin}': {e}")
-
+        # Die Metrik-Erfassung erfolgt jetzt in eigenen Threads pro Plugin.
         time.sleep(5)
