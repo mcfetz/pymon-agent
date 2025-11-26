@@ -5,6 +5,7 @@ import sys
 import time
 import os
 import importlib.util
+from plugins.plugin_base import PluginBase
 
 parser = argparse.ArgumentParser(description="Monitoring Agent")
 parser.add_argument("--server", required=True, help="Server URL")
@@ -86,8 +87,12 @@ if __name__ == "__main__":
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
                 # Suche nach der in diesem Modul definierten Klasse.
-                plugin_classes = [getattr(module, attr) for attr in dir(module)
-                                  if isinstance(getattr(module, attr), type) and not attr.startswith("__")]
+                plugin_classes = [
+                    getattr(module, attr)
+                    for attr in dir(module)
+                    if isinstance(getattr(module, attr), type)
+                    and not attr.startswith("__")
+                ]
                 if plugin_classes:
                     plugin_class = plugin_classes[0]
                     plugin_instance = plugin_class()
