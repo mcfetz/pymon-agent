@@ -48,7 +48,7 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 
-def send_metric(server_url: str, pluginid, metrics):
+def queue_metric(server_url: str, pluginid, metrics):
     """
     Fügt die von get_metrics zurückgegebene Metrik als Payload in die globale Queue ein.
     """
@@ -91,7 +91,7 @@ def run_plugin_instance(plugin, plugin_file_path):
         try:
             metric = plugin_instance.get_metrics()
             print(f"Metric von Plugin '{plugin}': {metric}")
-            send_metric(
+            queue_metric(
                 server_url=args.server,
                 pluginid=plugin_instance.get_plugin_id(),
                 metrics=metric,
@@ -132,7 +132,7 @@ def process_metric_queue():
                     f"{server_url}/metric", json=payload, headers=payload["headers"]
                 )
                 # Optional: Überprüfe den Status oder logge Erfolg/Misserfolg
-                # print(f"Metric sent, response: {response.status_code}")
+                print(f"Metric sent, response: {response.status_code}")
             except Exception as e:
                 print(f"Fehler beim Senden der Metrik: {e}")
             metric_queue.task_done()
