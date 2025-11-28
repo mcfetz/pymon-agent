@@ -15,10 +15,10 @@ def get_plugin_config(plugin_name: str, agentid: str, server_url: str) -> dict:
     Fetch the configuration for the given plugin from the server.
 
     The function requests the config from the URL formed as
-      f"{server_url}/plugin/{plugin_name}/config"
+      f"{server_url}/plugins/{plugin_name}/config"
     and sends the agentid via the headers.
     """
-    url = f"{server_url}/plugin/{plugin_name}/config"
+    url = f"{server_url}/plugins/{plugin_name}/config"
     headers = {"agentid": agentid}
     response = requests.get(url, headers=headers)
     response.raise_for_status()
@@ -40,7 +40,7 @@ args = parser.parse_args()
 
 
 def send_status(status):
-    url = f"{args.server}/status"
+    url = f"{args.server}/agents/status"
     params = {status: ""}
     headers = {"agentid": args.agentid}
     try:
@@ -96,9 +96,7 @@ def run_plugin_instance(plugin, plugin_file_path):
         plugin_classes = [
             getattr(module, attr)
             for attr in dir(module)
-            if isinstance(getattr(module, attr), type)
-            and not attr.startswith("__")
-            and "PluginBase" not in str(getattr(module, attr))
+            if isinstance(getattr(module, attr), type) and not attr.startswith("__") and "PluginBase" not in str(getattr(module, attr))
         ]
         if not plugin_classes:
             logging.error(f"No suitable class found in plugin '{plugin}'.")
@@ -133,7 +131,7 @@ def run_plugin_instance(plugin, plugin_file_path):
 
 def download_plugins(plugins: list):
     for plugin in plugins:
-        plugin_url = f"{args.server}/plugin/{plugin}"
+        plugin_url = f"{args.server}/plugins/{plugin}"
         headers = {"agentid": args.agentid}
         try:
             response = requests.get(plugin_url, headers=headers)
@@ -154,19 +152,13 @@ def process_metric_queue():
         try:
             server_url, payload = metric_queue.get()
             try:
-                response = requests.post(
-                    f"{server_url}/metric", json=payload, headers=payload["headers"]
-                )
+                response = requests.post(f"{server_url}/metrics", json=payload, headers=payload["headers"])
                 # Wenn der POST-Request erfolgreich war (HTTP 2xx)
                 if response.ok:
-                    logging.debug(
-                        f"Metric sent, response status: {response.status_code}"
-                    )
+                    logging.debug(f"Metric sent, response status: {response.status_code}")
                     metric_queue.task_done()
                 else:
-                    logging.error(
-                        f"Metric post unsuccessful (Status: {response.status_code}), requeuing"
-                    )
+                    logging.error(f"Metric post unsuccessful (Status: {response.status_code}), requeuing")
                     # Requeue the metric for later retry.
                     metric_queue.put((server_url, payload))
                     metric_queue.task_done()
@@ -210,9 +202,7 @@ if __name__ == "__main__":
         for plugin in plugins:
             if plugin != "plugin_base" and plugin not in plugin_threads:
                 plugin_file_path = os.path.join(plugins_dir, f"{plugin}.py")
-                t = threading.Thread(
-                    target=run_plugin_instance, args=(plugin, plugin_file_path)
-                )
+                t = threading.Thread(target=run_plugin_instance, args=(plugin, plugin_file_path))
                 t.daemon = True
                 t.start()
                 plugin_threads[plugin] = t
