@@ -32,7 +32,7 @@ def send_status(status):
         response = requests.get(url, params=params, headers=headers)
         response.raise_for_status()
     except Exception as e:
-        logging.error(f"Fehler beim Senden des Status '{status}': {e}")
+        logging.error(f"Error sending status '{status}': {e}")
 
 
 def fetch_plugins():
@@ -41,23 +41,23 @@ def fetch_plugins():
     try:
         response = requests.get(url, headers=headers)
         response.raise_for_status()
-        # Annahme: Der Endpunkt liefert ein JSON-Array mit den Plugin-Namen
+        # Assumption: The endpoint returns a JSON array containing plugin names
         plugins = response.json()
         return plugins
     except Exception as e:
-        logging.error(f"Fehler beim Abrufen der Plugins: {e}")
+        logging.error(f"Error fetching plugins: {e}")
         return []
 
 
 def signal_handler(sig, frame):
-    logging.info("Beende Agent... sende offline Status.")
+    logging.info("Shutting down agent... sending offline status.")
     send_status("offline")
     sys.exit(0)
 
 
 def queue_metric(server_url: str, pluginid, metrics):
     """
-    Fügt die von get_metrics zurückgegebene Metrik als Payload in die globale Queue ein.
+    Adds the payload produced by get_metrics into the global metric queue.
     """
     headers = {"agentid": args.agentid}
     if isinstance(metrics, dict):
@@ -77,7 +77,7 @@ def run_plugin_instance(plugin, plugin_file_path):
         spec = importlib.util.spec_from_file_location(plugin, plugin_file_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        # Suche nach der in diesem Modul definierten Klasse (ausgenommen PluginBase)
+        # Search for the class defined in this module (excluding PluginBase)
         plugin_classes = [
             getattr(module, attr)
             for attr in dir(module)
@@ -86,29 +86,29 @@ def run_plugin_instance(plugin, plugin_file_path):
             and "PluginBase" not in str(getattr(module, attr))
         ]
         if not plugin_classes:
-            logging.error(f"Keine geeignete Klasse in Plugin '{plugin}' gefunden.")
+            logging.error(f"No suitable class found in plugin '{plugin}'.")
             return
         plugin_class = plugin_classes[0]
         plugin_instance = plugin_class()
     except Exception as e:
-        logging.error(f"Fehler beim Laden des Plugins '{plugin}': {e}")
+        logging.error(f"Error loading plugin '{plugin}': {e}")
         return
 
     while True:
         try:
             metric = plugin_instance.get_metrics()
-            logging.info(f"Metric von Plugin '{plugin}': {metric}")
+            logging.info(f"Plugin '{plugin}' metric: {metric}")
             queue_metric(
                 server_url=args.server,
                 pluginid=plugin_instance.get_plugin_id(),
                 metrics=metric,
             )
         except Exception as e:
-            logging.error(f"Fehler bei get_metric von Plugin '{plugin}': {e}")
+            logging.error(f"Error in get_metrics for plugin '{plugin}': {e}")
         try:
             sleep_time = plugin_instance.get_default_sleep()
         except Exception as e:
-            logging.error(f"Fehler bei get_default_sleep von Plugin '{plugin}': {e}")
+            logging.error(f"Error in get_default_sleep for plugin '{plugin}': {e}")
             sleep_time = 5  # Fallback-Schlafzeit
         time.sleep(sleep_time)
 
@@ -121,7 +121,7 @@ def download_plugins(plugins: list):
             response = requests.get(plugin_url, headers=headers)
             response.raise_for_status()
             plugin_code = response.text
-            # Speichere den Plugin-Code in der Datei plugins/{plugin}.py
+            # Save the plugin code into the file plugins/{plugin}.py
             plugin_file_path = os.path.join(plugins_dir, f"{plugin}.py")
             with open(plugin_file_path, "w", encoding="utf-8") as f:
                 f.write(plugin_code)
@@ -132,7 +132,7 @@ def download_plugins(plugins: list):
 
 def process_metric_queue():
     while True:
-        logging.debug(f"Metric Queue Length: {metric_queue.qsize()}")
+        logging.debug(f"Metric queue length: {metric_queue.qsize()}")
         try:
             server_url, payload = metric_queue.get()
             try:
@@ -141,7 +141,7 @@ def process_metric_queue():
                 )
                 # Wenn der POST-Request erfolgreich war (HTTP 2xx)
                 if response.ok:
-                    logging.debug(f"Metric sent, response: {response.status_code}")
+                    logging.debug(f"Metric sent, response status: {response.status_code}")
                     metric_queue.task_done()
                 else:
                     logging.error(
@@ -151,11 +151,11 @@ def process_metric_queue():
                     metric_queue.put((server_url, payload))
                     metric_queue.task_done()
             except Exception as e:
-                logging.error(f"Fehler beim Senden der Metrik: {e} - requeuing")
+                logging.error(f"Error sending metric: {e} - requeuing")
                 metric_queue.put((server_url, payload))
                 metric_queue.task_done()
         except Exception as e:
-            logging.error(f"Fehler beim Abrufen aus der Queue: {e}")
+            logging.error(f"Error retrieving from queue: {e}")
         time.sleep(0.5)  # Kleine Pause, um die CPU-Last zu reduzieren
 
 
