@@ -53,7 +53,14 @@ def send_metric(server_url: str, pluginid, metrics):
     Fügt die von get_metrics zurückgegebene Metrik als Payload in die globale Queue ein.
     """
     headers = {"agentid": args.agentid}
-    payload = {"pluginid": pluginid, "agentid": args.agentid, "metrics": metrics, "headers": headers}
+    if isinstance(metrics, dict):
+        metrics = [metrics]
+    payload = {
+        "pluginid": pluginid,
+        "agentid": args.agentid,
+        "metrics": metrics,
+        "headers": headers,
+    }
     metric_queue.put((server_url, payload))
 
 
@@ -120,7 +127,9 @@ def process_metric_queue():
         try:
             server_url, payload = metric_queue.get()
             try:
-                response = requests.post(f"{server_url}/metric", json=payload, headers=payload["headers"])
+                response = requests.post(
+                    f"{server_url}/metric", json=payload, headers=payload["headers"]
+                )
                 # Optional: Überprüfe den Status oder logge Erfolg/Misserfolg
                 # print(f"Metric sent, response: {response.status_code}")
             except Exception as e:
@@ -129,6 +138,7 @@ def process_metric_queue():
         except Exception as e:
             print(f"Fehler beim Abrufen aus der Queue: {e}")
         time.sleep(0.1)  # Kleine Pause, um CPU-Last zu reduzieren
+
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
