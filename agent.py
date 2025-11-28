@@ -6,7 +6,10 @@ import time
 import os
 import importlib.util
 import threading
+import queue
 from plugins.plugin_base import PluginBase
+
+metric_queue = queue.Queue()
 
 parser = argparse.ArgumentParser(description="Monitoring Agent")
 parser.add_argument("--server", required=True, help="Server URL")
@@ -45,18 +48,13 @@ def signal_handler(sig, frame):
     sys.exit(0)
 
 
-def send_metric(server_url: str, pluginid, metrics) -> requests.Response:
+def send_metric(server_url: str, pluginid, metrics):
     """
-    Sendet die von get_metrics zurÃ¼ckgegebene Metrik als JSON an den /metric Endpoint.
-    Der Ã¼bergebene agentid-Wert wird im HTTP-Header gesendet.
+    Fügt die von get_metrics zurückgegebene Metrik als Payload in die globale Queue ein.
     """
     headers = {"agentid": args.agentid}
-    payload = {"pluginid": pluginid, "agentid": args.agentid, "metrics": metrics}
-    try:
-        response = requests.post(f"{server_url}/metric", json=payload, headers=headers)
-        return response
-    except Exception as e:
-        raise RuntimeError(f"Fehler beim Senden der Metriken: {e}")
+    payload = {"pluginid": pluginid, "agentid": args.agentid, "metrics": metrics, "headers": headers}
+    metric_queue.put((server_url, payload))
 
 
 def run_plugin_instance(plugin, plugin_file_path):
@@ -117,6 +115,21 @@ def download_plugins(plugins: list):
             print(f"error while loading plugin '{plugin}': {e}")
 
 
+def process_metric_queue():
+    while True:
+        try:
+            server_url, payload = metric_queue.get()
+            try:
+                response = requests.post(f"{server_url}/metric", json=payload, headers=payload["headers"])
+                # Optional: Überprüfe den Status oder logge Erfolg/Misserfolg
+                # print(f"Metric sent, response: {response.status_code}")
+            except Exception as e:
+                print(f"Fehler beim Senden der Metrik: {e}")
+            metric_queue.task_done()
+        except Exception as e:
+            print(f"Fehler beim Abrufen aus der Queue: {e}")
+        time.sleep(0.1)  # Kleine Pause, um CPU-Last zu reduzieren
+
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
@@ -138,6 +151,12 @@ if __name__ == "__main__":
 
     send_status("online")
     print("agent online. Press Ctrl+C to quit.")
+
+    # Starte den Thread zur Bearbeitung der Metric-Queue
+    metric_thread = threading.Thread(target=process_metric_queue)
+    metric_thread.daemon = True
+    metric_thread.start()
+
     while True:
         for plugin in plugins:
             if plugin != "plugin_base" and plugin not in plugin_threads:
