@@ -125,6 +125,7 @@ def download_plugins(plugins: list):
 
 def process_metric_queue():
     while True:
+        print(f"Metric Queue Length: {metric_queue.qsize()}")
         try:
             server_url, payload = metric_queue.get()
             try:
