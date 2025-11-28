@@ -132,7 +132,7 @@ def download_plugins(plugins: list):
 
 def process_metric_queue():
     while True:
-        logging.info(f"Metric Queue Length: {metric_queue.qsize()}")
+        logging.debug(f"Metric Queue Length: {metric_queue.qsize()}")
         try:
             server_url, payload = metric_queue.get()
             try:
@@ -141,7 +141,7 @@ def process_metric_queue():
                 )
                 # Wenn der POST-Request erfolgreich war (HTTP 2xx)
                 if response.ok:
-                    logging.info(f"Metric sent, response: {response.status_code}")
+                    logging.debug(f"Metric sent, response: {response.status_code}")
                     metric_queue.task_done()
                 else:
                     logging.error(
