@@ -137,7 +137,9 @@ def process_metric_queue():
                     print(f"Metric sent, response: {response.status_code}")
                     metric_queue.task_done()
                 else:
-                    print(f"Metric post unsuccessful (Status: {response.status_code}), requeuing")
+                    print(
+                        f"Metric post unsuccessful (Status: {response.status_code}), requeuing"
+                    )
                     # Requeue the metric for later retry.
                     metric_queue.put((server_url, payload))
                     metric_queue.task_done()
@@ -147,7 +149,7 @@ def process_metric_queue():
                 metric_queue.task_done()
         except Exception as e:
             print(f"Fehler beim Abrufen aus der Queue: {e}")
-        time.sleep(0.1)  # Kleine Pause, um die CPU-Last zu reduzieren
+        time.sleep(0.5)  # Kleine Pause, um die CPU-Last zu reduzieren
 
 
 signal.signal(signal.SIGINT, signal_handler)
