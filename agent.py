@@ -59,6 +59,7 @@ def send_metric(server_url: str, pluginid, metrics):
         "pluginid": pluginid,
         "agentid": args.agentid,
         "metrics": metrics,
+        "timestamp": time.time(),
         "headers": headers,
     }
     metric_queue.put((server_url, payload))
