@@ -10,6 +10,20 @@ import queue
 import logging
 from plugins.plugin_base import PluginBase
 
+def get_plugin_config(plugin_name: str, agentid: str, server_url: str) -> dict:
+    """
+    Fetch the configuration for the given plugin from the server.
+    
+    The function requests the config from the URL formed as
+      f"{server_url}/plugin/{plugin_name}/config"
+    and sends the agentid via the headers.
+    """
+    url = f"{server_url}/plugin/{plugin_name}/config"
+    headers = {"agentid": agentid}
+    response = requests.get(url, headers=headers)
+    response.raise_for_status()
+    return response.json()
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -89,7 +103,9 @@ def run_plugin_instance(plugin, plugin_file_path):
             logging.error(f"No suitable class found in plugin '{plugin}'.")
             return
         plugin_class = plugin_classes[0]
-        plugin_instance = plugin_class()
+        # Plugin-Konfiguration abrufen und an den Konstruktor übergeben
+        config = get_plugin_config(plugin, args.agentid, args.server)
+        plugin_instance = plugin_class(config)
     except Exception as e:
         logging.error(f"Error loading plugin '{plugin}': {e}")
         return
