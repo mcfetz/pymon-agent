@@ -122,10 +122,10 @@ def run_plugin_instance(plugin, plugin_file_path):
         except Exception as e:
             logging.error(f"Error in get_metrics for plugin '{plugin}': {e}")
         try:
-            sleep_time = plugin_instance.get_default_sleep()
+            sleep_time = plugin_instance.get_sleep()
         except Exception as e:
-            logging.error(f"Error in get_default_sleep for plugin '{plugin}': {e}")
-            sleep_time = 5  # Fallback-Schlafzeit
+            logging.error(f"Error in get_sleep for plugin '{plugin}': {e}")
+            sleep_time = 300  # Fallback-Schlafzeit
         time.sleep(sleep_time)
 
 
