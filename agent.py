@@ -19,7 +19,7 @@ def get_plugin_config(plugin_name: str, agentid: str, server_url: str) -> dict:
     and sends the agentid via the headers.
     """
     url = f"{server_url}/plugins/{plugin_name}/config"
-    headers = {"agentid": agentid}
+    headers = _build_headers()
     response = requests.get(url, headers=headers)
     response.raise_for_status()
     return response.json()
@@ -36,13 +36,33 @@ metric_queue = queue.Queue()
 parser = argparse.ArgumentParser(description="Monitoring Agent")
 parser.add_argument("--server", required=True, help="Server URL")
 parser.add_argument("--agentid", required=True, help="Agent ID")
+parser.add_argument(
+    "--api-key",
+    required=True,
+    type=str,
+    help="API key used for authenticating HTTP requests to the server",
+)
 args = parser.parse_args()
+
+
+def _build_headers(extra: dict | None = None) -> dict:
+    """
+    Build base headers for all HTTP requests to the server, including auth.
+    Optionally merge in extra headers.
+    """
+    base = {
+        "agentid": args.agentid,
+        "x-api-key": args.api_key,
+    }
+    if extra:
+        base.update(extra)
+    return base
 
 
 def send_status(status):
     url = f"{args.server}/agents/status"
     params = {status: ""}
-    headers = {"agentid": args.agentid}
+    headers = _build_headers()
     try:
         response = requests.get(url, params=params, headers=headers)
         response.raise_for_status()
@@ -52,7 +72,7 @@ def send_status(status):
 
 def fetch_plugins():
     url = f"{args.server}/plugins"
-    headers = {"agentid": args.agentid}
+    headers = _build_headers()
     try:
         response = requests.get(url, headers=headers)
         response.raise_for_status()
@@ -74,7 +94,7 @@ def queue_metric(server_url: str, pluginid, metrics):
     """
     Adds the payload produced by get_metrics into the global metric queue.
     """
-    headers = {"agentid": args.agentid}
+    headers = _build_headers()
     if isinstance(metrics, dict):
         metrics = [metrics]
     payload = {
@@ -132,7 +152,7 @@ def run_plugin_instance(plugin, plugin_file_path):
 def download_plugins(plugins: list):
     for plugin in plugins:
         plugin_url = f"{args.server}/plugins/{plugin}"
-        headers = {"agentid": args.agentid}
+        headers = _build_headers()
         try:
             response = requests.get(plugin_url, headers=headers)
             response.raise_for_status()
