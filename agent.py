@@ -287,8 +287,8 @@ if __name__ == "__main__":
 
             cfg = configs.get(plugin, {})
             plugin_sleep = int(cfg.get("sleep", 60))
-            last_ts = last_run.get(plugin, 0.0)
-            if now - last_ts < plugin_sleep:
+            last_ts = last_run.get(plugin)
+            if last_ts is not None and (now - last_ts) < plugin_sleep:
                 continue
 
             metrics = run_plugin(plugin, cfg)
