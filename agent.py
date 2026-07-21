@@ -1,29 +1,26 @@
+"""pymon-agent — Thin metric agent with subprocess plugin execution.
+
+Each plugin is a standalone script invoked as a subprocess.
+Contract:
+  - Plugin reads config (JSON object) from stdin, one line
+  - Plugin writes metrics (JSON object) to stdout, one line
+  - Plugin exits 0 on success, non-zero on error (stderr for diagnostics)
+  - Agent enforces a timeout (default 30s) per plugin run
+"""
+
 import argparse
-import requests
-import signal
-import sys
-import time
-import os
-import importlib.util
-import threading
-import queue
+import json
 import logging
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+from datetime import datetime, timezone
+from hashlib import sha256
 
-
-def get_plugin_config(plugin_name: str, agentid: str, server_url: str) -> dict:
-    """
-    Fetch the configuration for the given plugin from the server.
-
-    The function requests the config from the URL formed as
-      f"{server_url}/plugins/{plugin_name}/config"
-    and sends the agentid via the headers.
-    """
-    url = f"{server_url}/plugins/{plugin_name}/config"
-    headers = _build_headers()
-    response = requests.get(url, headers=headers)
-    response.raise_for_status()
-    return response.json()
-
+import requests
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,200 +28,280 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-metric_queue = queue.Queue()
+PLUGINS_DIR = "plugins"
+POLL_INTERVAL = 5
+PLUGIN_REFRESH_INTERVAL = 60
+PLUGIN_TIMEOUT = 30
+VERSION_CHECK_INTERVAL = 300
 
-parser = argparse.ArgumentParser(description="Monitoring Agent")
+parser = argparse.ArgumentParser(description="pymon Agent")
 parser.add_argument("--server", required=True, help="Server URL")
 parser.add_argument("--agentid", required=True, help="Agent ID")
-parser.add_argument(
-    "--api-key",
-    required=True,
-    type=str,
-    help="API key used for authenticating HTTP requests to the server",
-)
+parser.add_argument("--api-key", required=True, type=str, help="API key for server auth")
 args = parser.parse_args()
 
 
 def _build_headers(extra: dict | None = None) -> dict:
-    """
-    Build base headers for all HTTP requests to the server, including auth.
-    Optionally merge in extra headers.
-    """
-    base = {
-        "agentid": args.agentid,
-        "x-api-key": args.api_key,
-    }
+    base = {"agentid": args.agentid, "x-api-key": args.api_key}
     if extra:
         base.update(extra)
     return base
 
 
-def send_status(status):
-    url = f"{args.server}/agents/status"
-    params = {status: ""}
-    headers = _build_headers()
-    try:
-        response = requests.get(url, params=params, headers=headers)
-        response.raise_for_status()
-    except Exception as e:
-        logging.error(f"Error sending status '{status}': {e}")
+# ---------------------------------------------------------------------------
+# Plugin file helpers
+# ---------------------------------------------------------------------------
+
+def plugin_path(name: str) -> str:
+    return os.path.join(PLUGINS_DIR, f"{name}.py")
 
 
-def fetch_plugins():
-    url = f"{args.server}/plugins"
-    headers = _build_headers()
+def plugin_hash(name: str) -> str | None:
     try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        # Assumption: The endpoint returns a JSON array containing plugin names
-        plugins = response.json()
-        return plugins
+        with open(plugin_path(name), "rb") as f:
+            return sha256(f.read()).hexdigest()
+    except FileNotFoundError:
+        return None
+
+
+def fetch_plugin_list() -> list[str]:
+    try:
+        resp = requests.get(f"{args.server}/plugins", headers=_build_headers())
+        resp.raise_for_status()
+        return resp.json()
     except Exception as e:
-        logging.error(f"Error fetching plugins: {e}")
+        logging.error("Error fetching plugin list: %s", e)
         return []
 
 
+def download_plugin(plugin: str) -> bool:
+    try:
+        resp = requests.get(f"{args.server}/plugins/{plugin}", headers=_build_headers())
+        resp.raise_for_status()
+        os.makedirs(PLUGINS_DIR, exist_ok=True)
+        with open(plugin_path(plugin), "w", encoding="utf-8") as f:
+            f.write(resp.text)
+        logging.info("Plugin '%s' downloaded", plugin)
+        return True
+    except Exception as e:
+        logging.error("Error downloading plugin '%s': %s", plugin, e)
+        return False
+
+
+def fetch_plugin_config(plugin: str) -> dict:
+    try:
+        resp = requests.get(f"{args.server}/plugins/{plugin}/config", headers=_build_headers())
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        logging.warning("Error fetching config for '%s': %s", plugin, e)
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Plugin execution (subprocess model)
+# ---------------------------------------------------------------------------
+
+def run_plugin(plugin: str, config: dict) -> dict | None:
+    path = plugin_path(plugin)
+    if not os.path.exists(path):
+        logging.error("Plugin file not found: %s", path)
+        return None
+
+    try:
+        proc = subprocess.run(
+            [sys.executable, path],
+            input=json.dumps(config or {}),
+            capture_output=True, text=True,
+            timeout=PLUGIN_TIMEOUT,
+        )
+    except FileNotFoundError:
+        logging.error("Python interpreter not found for plugin '%s'", plugin)
+        return None
+
+    if proc.returncode != 0:
+        stderr = proc.stderr.strip()
+        if stderr:
+            logging.warning("Plugin '%s' stderr: %s", plugin, stderr)
+        return None
+
+    output = proc.stdout.strip()
+    if not output:
+        return None
+
+    try:
+        return json.loads(output)
+    except json.JSONDecodeError as e:
+        logging.error("Plugin '%s' returned invalid JSON: %s", plugin, e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Agent lifecycle
+# ---------------------------------------------------------------------------
+
+def send_status(status: str):
+    try:
+        requests.post(
+            f"{args.server}/agents/status",
+            json={"status": status},
+            headers=_build_headers(),
+            timeout=10,
+        )
+    except Exception as e:
+        logging.error("Error sending status '%s': %s", status, e)
+
+
+def post_metrics(plugin: str, metrics_list: list[dict], timestamp: str):
+    payload = {
+        "pluginid": plugin,
+        "agentid": args.agentid,
+        "metrics": metrics_list,
+        "timestamp": timestamp,
+    }
+    try:
+        resp = requests.post(
+            f"{args.server}/metrics",
+            json=payload,
+            headers=_build_headers(),
+            timeout=15,
+        )
+        if not resp.ok:
+            logging.warning("POST /metrics returned %s for '%s'", resp.status_code, plugin)
+    except Exception as e:
+        logging.error("Error posting metrics for '%s': %s", plugin, e)
+
+
 def signal_handler(sig, frame):
-    logging.info("Shutting down agent... sending offline status.")
+    logging.info("Shutting down... sending offline status")
     send_status("offline")
     sys.exit(0)
 
 
-def queue_metric(server_url: str, pluginid, metrics):
-    """
-    Adds the payload produced by get_metrics into the global metric queue.
-    """
-    headers = _build_headers()
-    if isinstance(metrics, dict):
-        metrics = [metrics]
-    payload = {
-        "pluginid": pluginid,
-        "agentid": args.agentid,
-        "metrics": metrics,
-        "timestamp": time.time(),
-        "headers": headers,
-    }
-    metric_queue.put((server_url, payload))
+# ---------------------------------------------------------------------------
+# Self-update
+# ---------------------------------------------------------------------------
 
-
-def run_plugin_instance(plugin, plugin_file_path):
+def self_update():
+    """Check for a newer agent version on the server and replace ourselves."""
     try:
-        spec = importlib.util.spec_from_file_location(plugin, plugin_file_path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        # Search for the class defined in this module (excluding PluginBase)
-        plugin_classes = [
-            getattr(module, attr)
-            for attr in dir(module)
-            if isinstance(getattr(module, attr), type) and not attr.startswith("__") and "PluginBase" not in str(getattr(module, attr))
-        ]
-        if not plugin_classes:
-            logging.error(f"No suitable class found in plugin '{plugin}'.")
+        resp = requests.get(f"{args.server}/agent/version", headers=_build_headers(), timeout=10)
+        resp.raise_for_status()
+        remote_hash = resp.json().get("hash")
+        if not remote_hash:
             return
-        plugin_class = plugin_classes[0]
-        # Plugin-Konfiguration abrufen und an den Konstruktor übergeben
-        config = get_plugin_config(plugin, args.agentid, args.server)
-        plugin_instance = plugin_class(config)
-        logging.info(f"Plugin '{plugin}' loaded. Config: {config}")
-    except Exception as e:
-        logging.error(f"Error loading plugin '{plugin}': {e}")
+    except Exception:
         return
 
-    while True:
-        try:
-            metric = plugin_instance.get_metrics()
-            logging.info(f"Plugin '{plugin}' metric: {metric}")
-            queue_metric(
-                server_url=args.server,
-                pluginid=plugin_instance.get_plugin_id(),
-                metrics=metric,
-            )
-        except Exception as e:
-            logging.error(f"Error in get_metrics for plugin '{plugin}': {e}")
-        try:
-            sleep_time = plugin_instance.get_sleep()
-        except Exception as e:
-            logging.error(f"Error in get_sleep for plugin '{plugin}': {e}")
-            sleep_time = 300  # Fallback-Schlafzeit
-        time.sleep(sleep_time)
+    with open(__file__, "rb") as f:
+        local_hash = sha256(f.read()).hexdigest()
+
+    if local_hash == remote_hash:
+        return
+
+    logging.info("New agent version detected, downloading...")
+    try:
+        resp = requests.get(
+            f"{args.server}/agent/download",
+            headers=_build_headers(),
+            timeout=30,
+        )
+        resp.raise_for_status()
+        new_code = resp.text
+    except Exception as e:
+        logging.error("Failed to download new agent version: %s", e)
+        return
+
+    backup = __file__ + ".bak"
+    try:
+        with open(backup, "w", encoding="utf-8") as f:
+            f.write(new_code)
+        os.replace(backup, __file__)
+        logging.info("Agent updated. Restarting...")
+        os.execv(sys.executable, [sys.executable, __file__] + sys.argv[1:])
+    except Exception as e:
+        logging.error("Failed to apply agent update: %s", e)
+        if os.path.exists(backup):
+            os.remove(backup)
 
 
-def download_plugins(plugins: list):
-    for plugin in plugins:
-        plugin_url = f"{args.server}/plugins/{plugin}"
-        headers = _build_headers()
-        try:
-            response = requests.get(plugin_url, headers=headers)
-            response.raise_for_status()
-            plugin_code = response.text
-            # Save the plugin code into the file plugins/{plugin}.py
-            plugin_file_path = os.path.join(plugins_dir, f"{plugin}.py")
-            with open(plugin_file_path, "w", encoding="utf-8") as f:
-                f.write(plugin_code)
-            logging.info(f"Plugin '{plugin}' successfully downloaded and stored.")
-        except Exception as e:
-            logging.error(f"Error while loading plugin '{plugin}': {e}")
-
-
-def process_metric_queue():
-    while True:
-        logging.debug(f"Metric queue length: {metric_queue.qsize()}")
-        try:
-            server_url, payload = metric_queue.get()
-            try:
-                response = requests.post(f"{server_url}/metrics", json=payload, headers=payload["headers"])
-                # Wenn der POST-Request erfolgreich war (HTTP 2xx)
-                if response.ok:
-                    logging.debug(f"Metric sent, response status: {response.status_code}")
-                    metric_queue.task_done()
-                else:
-                    logging.error(f"Metric post unsuccessful (Status: {response.status_code}), requeuing")
-                    # Requeue the metric for later retry.
-                    metric_queue.put((server_url, payload))
-                    metric_queue.task_done()
-            except Exception as e:
-                logging.error(f"Error sending metric: {e} - requeuing")
-                metric_queue.put((server_url, payload))
-                metric_queue.task_done()
-        except Exception as e:
-            logging.error(f"Error retrieving from queue: {e}")
-        time.sleep(0.5)  # Kleine Pause, um die CPU-Last zu reduzieren
-
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-
 if __name__ == "__main__":
-    plugins_dir = "plugins"
-    if not os.path.exists(plugins_dir):
-        os.makedirs(plugins_dir)
+    os.makedirs(PLUGINS_DIR, exist_ok=True)
 
-    plugin_threads = {}
-
-    plugins = fetch_plugins()
-    if len(plugins) == 0:
-        logging.error("No plugins found. Exiting.")
+    plugins = fetch_plugin_list()
+    if not plugins:
+        logging.error("No plugins assigned. Exiting.")
         sys.exit(0)
 
-    logging.info(f"Plugins assigned: {plugins}")
-    download_plugins(plugins)
+    plugins = [p for p in plugins if p != "plugin_base"]
+    logging.info("Assigned plugins: %s", plugins)
+
+    # Download all plugins and fetch configs
+    configs: dict[str, dict] = {}
+    for plugin in plugins:
+        if plugin_hash(plugin) is None:
+            download_plugin(plugin)
+        configs[plugin] = fetch_plugin_config(plugin)
 
     send_status("online")
-    logging.info("Agent online. Press Ctrl+C to quit.")
+    logging.info("Agent online.")
 
-    # Starte den Thread zur Bearbeitung der Metric-Queue
-    metric_thread = threading.Thread(target=process_metric_queue)
-    metric_thread.daemon = True
-    metric_thread.start()
+    last_plugin_refresh = 0.0
+    last_version_check = 0.0
+    last_run: dict[str, float] = {}
 
     while True:
-        for plugin in plugins:
-            if plugin != "plugin_base" and plugin not in plugin_threads:
-                plugin_file_path = os.path.join(plugins_dir, f"{plugin}.py")
-                t = threading.Thread(target=run_plugin_instance, args=(plugin, plugin_file_path))
-                t.daemon = True
-                t.start()
-                plugin_threads[plugin] = t
+        now = time.time()
 
-        time.sleep(5)
+        # Periodic plugin list refresh
+        if now - last_plugin_refresh > PLUGIN_REFRESH_INTERVAL:
+            fresh = fetch_plugin_list()
+            fresh = [p for p in fresh if p != "plugin_base"]
+            for plugin in fresh:
+                if plugin not in plugins:
+                    logging.info("New plugin detected: %s", plugin)
+                    download_plugin(plugin)
+                    configs[plugin] = fetch_plugin_config(plugin)
+                    plugins.append(plugin)
+            # Remove plugins no longer assigned
+            plugins[:] = [p for p in plugins if p in fresh]
+            last_plugin_refresh = now
+
+        # Periodic self-update check
+        if now - last_version_check > VERSION_CHECK_INTERVAL:
+            self_update()
+            last_version_check = now
+
+        # Run plugins respecting per-plugin sleep interval
+        ts = datetime.now(timezone.utc).isoformat()
+        for plugin in plugins:
+            if plugin_hash(plugin) is None:
+                continue
+
+            cfg = configs.get(plugin, {})
+            plugin_sleep = int(cfg.get("sleep", 60))
+            last_ts = last_run.get(plugin, 0.0)
+            if now - last_ts < plugin_sleep:
+                continue
+
+            metrics = run_plugin(plugin, cfg)
+            if metrics is None:
+                continue
+
+            # Normalize: plugin returns dict → list of {key: value}
+            if isinstance(metrics, dict):
+                metrics_list = [{k: v} for k, v in metrics.items()]
+            else:
+                metrics_list = metrics  # already a list
+
+            post_metrics(plugin, metrics_list, ts)
+            last_run[plugin] = now
+
+        time.sleep(POLL_INTERVAL)
