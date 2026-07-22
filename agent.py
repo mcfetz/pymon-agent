@@ -1,4 +1,4 @@
-"""pymon-agent — Thin metric agent with subprocess plugin execution.
+"""pymon-agent â Thin metric agent with subprocess plugin execution.
 
 Each plugin is a standalone script invoked as a subprocess.
 Contract:
@@ -19,6 +19,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from hashlib import sha256
+from typing import Optional
 
 import requests
 
@@ -33,15 +34,31 @@ POLL_INTERVAL = 5
 PLUGIN_REFRESH_INTERVAL = 60
 PLUGIN_TIMEOUT = 30
 VERSION_CHECK_INTERVAL = 300
+CONFIG_FILE = "agent.json"
+
+
+def _load_config() -> dict:
+    try:
+        with open(os.path.join(os.path.dirname(__file__), CONFIG_FILE)) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+cfg_file = _load_config()
 
 parser = argparse.ArgumentParser(description="pymon Agent")
-parser.add_argument("--server", required=True, help="Server URL")
-parser.add_argument("--agentid", required=True, help="Agent ID")
-parser.add_argument("--api-key", required=True, type=str, help="API key for server auth")
+parser.add_argument("--server", default=cfg_file.get("server"), help="Server URL")
+parser.add_argument("--agentid", default=cfg_file.get("agentid"), help="Agent ID")
+parser.add_argument("--api-key", default=cfg_file.get("api_key"), type=str, help="API key for server auth")
 args = parser.parse_args()
 
+if not args.server or not args.agentid or not args.api_key:
+    print("ERROR: server, agentid, and api-key are required (pass as args or in agent.json)")
+    sys.exit(1)
 
-def _build_headers(extra: dict | None = None) -> dict:
+
+def _build_headers(extra: Optional[dict] = None) -> dict:
     base = {"agentid": args.agentid, "x-api-key": args.api_key}
     if extra:
         base.update(extra)
@@ -56,7 +73,7 @@ def plugin_path(name: str) -> str:
     return os.path.join(PLUGINS_DIR, f"{name}.py")
 
 
-def plugin_hash(name: str) -> str | None:
+def plugin_hash(name: str) -> Optional[str]:
     try:
         with open(plugin_path(name), "rb") as f:
             return sha256(f.read()).hexdigest()
@@ -102,7 +119,7 @@ def fetch_plugin_config(plugin: str) -> dict:
 # Plugin execution (subprocess model)
 # ---------------------------------------------------------------------------
 
-def run_plugin(plugin: str, config: dict) -> dict | None:
+def run_plugin(plugin: str, config: dict) -> Optional[dict]:
     path = plugin_path(plugin)
     if not os.path.exists(path):
         logging.error("Plugin file not found: %s", path)
@@ -274,10 +291,9 @@ if __name__ == "__main__":
             plugins[:] = [p for p in plugins if p in fresh]
             last_plugin_refresh = now
 
-        # Periodic self-update check
-        if now - last_version_check > VERSION_CHECK_INTERVAL:
-            self_update()
-            last_version_check = now
+        # Periodic self-update check — disabled in dev
+        # self_update()
+        # last_version_check = now
 
         # Run plugins respecting per-plugin sleep interval
         ts = datetime.now(timezone.utc).isoformat()
@@ -287,15 +303,15 @@ if __name__ == "__main__":
 
             cfg = configs.get(plugin, {})
             plugin_sleep = int(cfg.get("sleep", 60))
-            last_ts = last_run.get(plugin)
-            if last_ts is not None and (now - last_ts) < plugin_sleep:
+            last_ts = last_run.get(plugin, 0.0)
+            if now - last_ts < plugin_sleep:
                 continue
 
             metrics = run_plugin(plugin, cfg)
             if metrics is None:
                 continue
 
-            # Normalize: plugin returns dict → list of {key: value}
+            # Normalize: plugin returns dict â list of {key: value}
             if isinstance(metrics, dict):
                 metrics_list = [{k: v} for k, v in metrics.items()]
             else:
