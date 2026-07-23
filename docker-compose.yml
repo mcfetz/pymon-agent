@@ -1,0 +1,32 @@
+services:
+  pymon-agent:
+    build: .
+    image: pymon-agent:latest
+    container_name: pymon-agent
+    restart: unless-stopped
+
+    environment:
+      PYMON_SERVER:   "https://pymon.familie-heise.de/api"
+      PYMON_AGENTID:  "my-host"
+      PYMON_API_KEY:  "changeme"
+
+    volumes:
+      # Persist downloaded plugins across restarts
+      - pymon-agent-plugins:/app/plugins
+      # Docker plugin: access host Docker daemon
+      - /var/run/docker.sock:/var/run/docker.sock
+
+    # Required for accurate host metrics:
+    # - pid: host   → psutil sees all host processes (cpu, ram, disk)
+    # - network: host → real network interface stats
+    # Remove if you only need container-level metrics.
+    pid: host
+    network_mode: host
+
+    # ping plugin needs NET_RAW; host network_mode grants this automatically.
+    # If you use bridge networking instead, uncomment:
+    # cap_add:
+    #   - NET_RAW
+
+volumes:
+  pymon-agent-plugins:

@@ -1,10 +1,12 @@
+node_modules/
 venv/
 __pycache__/
 *.pyc
-*.pyo
 .aider*
 metrics.db
 agent.json
-
-# Plugins are downloaded from the server at runtime
 plugins/
+.git/
+Dockerfile
+docker-compose.yml
+.dockerignore
