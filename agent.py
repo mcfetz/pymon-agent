@@ -254,6 +254,38 @@ def send_status(status: str):
         logging.error("Error sending status '%s': %s", status, e)
 
 
+def _run_agent_executors(response_data: object) -> None:
+    if not isinstance(response_data, dict):
+        logging.warning("POST /metrics returned an unexpected response shape")
+        return
+
+    executors = response_data.get("executors", [])
+    if not isinstance(executors, list):
+        logging.warning("POST /metrics returned an invalid executors field")
+        return
+
+    for executor in executors:
+        if not isinstance(executor, dict):
+            logging.warning("Ignoring malformed agent-side executor: %r", executor)
+            continue
+
+        command = executor.get("command")
+        executor_id = executor.get("id", "")
+        if not isinstance(command, str) or not command:
+            logging.warning("Skipping agent-side executor '%s': missing command", executor_id)
+            continue
+
+        logging.info("Running agent-side executor '%s': %s", executor_id, command)
+        try:
+            subprocess.run(command, shell=True, check=False, timeout=30)
+        except subprocess.TimeoutExpired:
+            logging.error("Executor '%s' timed out", executor_id)
+        except (OSError, subprocess.SubprocessError) as e:
+            logging.error("Executor '%s' failed: %s", executor_id, e)
+        else:
+            logging.info("Executor '%s' finished", executor_id)
+
+
 def post_metrics(plugin: str, metrics_list: list[dict], timestamp: str):
     payload = {
         "pluginid": plugin,
@@ -270,6 +302,13 @@ def post_metrics(plugin: str, metrics_list: list[dict], timestamp: str):
         )
         if not resp.ok:
             logging.warning("POST /metrics returned %s for '%s'", resp.status_code, plugin)
+        else:
+            try:
+                response_data = resp.json()
+            except ValueError as e:
+                logging.warning("POST /metrics returned invalid JSON for '%s': %s", plugin, e)
+                return
+            _run_agent_executors(response_data)
     except Exception as e:
         logging.error("Error posting metrics for '%s': %s", plugin, e)
 
