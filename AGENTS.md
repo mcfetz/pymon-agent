@@ -1,1 +1,4 @@
-- primary language is english. use it for commits, comments, docstrings and logging messages
+# pymon component - Development Guidelines
+
+## Mandatory checks
+- python3 -m py_compile *.py → clean (if Python)
