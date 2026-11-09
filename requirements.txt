@@ -1,4 +1,4 @@
 requests>=2.34.2
 psutil
 # vigor167 uses the DrayOS management CLI over SSH
-paramiko>=3.5.0
+paramiko>=5.1.0
