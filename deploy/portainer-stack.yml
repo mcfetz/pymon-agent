@@ -1,0 +1,35 @@
+# Portainer-Stack fuer den pymon-agent im Swarm.
+#
+# Wichtig: dieses Image braucht **nur** der Dienst hier. Alle anderen Agenten (pve1-3,
+# docker11-13, zoraxy01/02, diskstation, UCG, Homey, macbook) werden mit dem Install-Befehl aus
+# dem Server aufgesetzt (`curl .../api/agent/install.sh | sh`) und laufen als Python-Skript mit
+# lokalem Interpreter — dafuer gibt es kein Image und keine Arch-Abhaengigkeit. Deshalb wird
+# bewusst nur amd64 gebaut.
+#
+# Image: git.familie-heise.de/daniel/pymon-agent:latest aus der Gitea-Pipeline.
+# Das Netzwerk `pymon` existiert bereits (extern), der Agent meldet sich ueber HTTPS beim Server.
+version: "3.9"
+
+services:
+  pymon-agent:
+    image: git.familie-heise.de/daniel/pymon-agent:latest
+    environment:
+      PYMON_SERVER: ${PYMON_SERVER}
+      PYMON_AGENTID: ${PYMON_AGENTID}
+      PYMON_API_KEY: ${PYMON_API_KEY}
+    networks:
+      pymon:
+        aliases:
+          - pymon-agent
+    # Kein Port nach aussen: der Agent pollt den Server, nicht umgekehrt.
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.app.pymon == 1
+      restart_policy:
+        condition: any
+
+networks:
+  pymon:
+    external: true
